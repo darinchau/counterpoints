@@ -145,6 +145,39 @@ class Note:
             velocity=velocity
         )
 
+    @classmethod
+    def from_str(cls, name: str, offset: float | int | Fraction = 0, velocity: int = 64):
+        """Assume the name in self.pitch_name format
+
+        "{self.pitch_name}{self.octave}[{self.duration_name}]"""
+        if not isinstance(offset, Fraction):
+            offset = Fraction(offset).limit_denominator(_LIMIT_DENOMINATOR)
+
+        name, rest = name.split("[")
+        rest = rest.rstrip("]")
+        duration = duration_str_to_fraction(rest)
+
+        match = _PITCH_NAME_REGEX.match(name)
+        if not match:
+            # Add the implied octave = 4
+            match = _PITCH_NAME_REGEX.match(name + "4")
+
+        assert match and len(match.groups()) == 3, f"The name {name} is not a valid note name"
+        pitch_name, alter, octave = match.groups()
+        if alter is None:
+            alter = ""
+        alter = alter.replace("x", "##").replace("-", "b").replace("+", "#")
+        sharps = reduce(lambda x, y: x + 1 if y == "#" else x - 1, alter, 0)
+        assert pitch_name in ("C", "D", "E", "F", "G", "A", "B"), f"Step must be one of CDEFGAB, but found {pitch_name}"  # to pass the typechecker
+
+        return cls(
+            index=_step_alter_to_lof_index(pitch_name, sharps),
+            octave=int(octave),
+            duration=duration,
+            offset=offset,
+            velocity=velocity
+        )
+
 
 def is_power_of_2(x: int):
     """Checks if a number is a power of 2"""
@@ -185,18 +218,61 @@ def duration_to_str(dur: Fraction | int | float):
     """
     assert dur > 0, f"Duration must be greater than 0, but found {dur}"
     if not isinstance(dur, Fraction):
-        dur = Fraction(dur).limit_denominator(_LIMIT_DENOMINATOR)
+        dur = Fraction(dur).limit_denominator(47)
     x, y = dur.numerator, dur.denominator
-    if is_power_of_2(y):
-        binary_str = bin(x)[2:]
-        c1 = binary_str.count('1')
-        c0 = binary_str.count('0')
-        if binary_str == '1' * c1 + '0' * c0:
-            return dur_prefix(c1 + c0 - 1 - int(math.log2(y))) + '.' * (c1 - 1)
-        trail = int(re.sub('1+0*', '', binary_str, count=1), 2)
-        greedy = x - trail
-        return duration_to_str(Fraction(greedy, y)) + '+' + duration_to_str(Fraction(trail, y))
-    return str(y) + duration_to_str(Fraction(x, highest_pow2(y)))
+    if not is_power_of_2(y):
+        return str(y) + duration_to_str(Fraction(x, highest_pow2(y)))
+    binary_str = bin(x)[2:]
+    c1 = binary_str.count('1')
+    c0 = binary_str.count('0')
+    if binary_str == '1' * c1 + '0' * c0:
+        return dur_prefix(c1 + c0 - 1 - int(math.log2(y))) + '.' * (c1 - 1)
+    trail = int(re.sub('1+0*', '', binary_str, count=1), 2)
+    greedy = x - trail
+    return duration_to_str(Fraction(greedy, y)) + '+' + duration_to_str(Fraction(trail, y))
+
+
+_BASE_NOTE = {
+    'w': Fraction(4),
+    'h': Fraction(2),
+    'q': Fraction(1),
+    'r': Fraction(1, 2),
+    's': Fraction(1, 4)
+}
+
+
+def duration_str_to_fraction(duration_str: str) -> Fraction:
+    """Converts a duration string to a Fraction. Reverse of duration_to_str."""
+    duration_str = duration_str.strip()
+
+    match = re.match(r'(\d+)*[qhwrs].*', duration_str)
+    assert match, f"Invalid duration string: {duration_str}"
+    tuplet_num, = match.groups()
+    if tuplet_num is not None:
+        return Fraction(highest_pow2(int(tuplet_num)), int(tuplet_num)) * duration_str_to_fraction(duration_str.replace(tuplet_num, '', 1))
+
+    if '+' in duration_str:
+        parts = duration_str.split('+')
+        return reduce(lambda x, y: x + duration_str_to_fraction(y), parts, Fraction(0))
+
+    match = re.match(r'([qhwrs])(\'*)(\.*)', duration_str)
+    assert match, f"Invalid duration string: {duration_str}"
+
+    base_note, apostrophes, dot_num = match.groups()
+    base_duration = _BASE_NOTE[base_note]
+    mults = []
+    dot_num = len(dot_num)
+
+    if apostrophes and base_note == 's':
+        mults.extend([Fraction(1, 2) for _ in range(len(apostrophes))])
+    elif apostrophes and base_note == 'w':
+        mults.extend([Fraction(2) for _ in range(len(apostrophes))])
+    elif apostrophes:
+        raise ValueError(f"Invalid apostrophes in duration string: {duration_str}")
+    if dot_num > 0:
+        base = 1 << dot_num
+        mults.append(Fraction(base * 2 - 1, base))
+    return reduce(lambda x, y: x * y, [base_duration] + mults, Fraction(1))
 
 
 def _step_alter_to_lof_index(step: StepName, alter: int) -> int:
