@@ -21,6 +21,8 @@ class Note:
     If the note is in real time, then the duration and offset is timed with respect to quarter length,
     otherwise it is timed with respect to real-time seconds.
 
+    A note of velocity 0 is a rest of that duration
+
     Attributes:
         index (int): The index of the note in the LOF (Line of Fifths) scale.
         octave (int): The octave of the note, where middle C is C4.
@@ -42,6 +44,11 @@ class Note:
 
     def __repr__(self):
         return f"Note({self.note_name})"
+
+    @property
+    def is_rest(self):
+        """Returns True if the note is a rest, i.e. has velocity 0."""
+        return self.velocity == 0
 
     @property
     def pitch_name(self) -> str:
