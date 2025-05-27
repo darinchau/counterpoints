@@ -2,15 +2,12 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, asdict
-from functools import reduce, cached_property
+from functools import reduce, cached_property, lru_cache
 from typing import Literal
 from fractions import Fraction
-
-StepName = Literal["C", "D", "E", "F", "G", "A", "B"]
-_PITCH_NAME_REGEX = re.compile(r"([CDEFGAB])(#+|b+)?(-?[0-9]+)")
-PIANO_A0 = 21               # MIDI number for A0
-PIANO_C8 = 108              # MIDI number for C8
-_LIMIT_DENOMINATOR = 47     # Maximum number for tuplets. Can lift this if needed
+from .consts import (
+    PIANO_A0, PIANO_C8, _LIMIT_DENOMINATOR, StepName, _PITCH_NAME_REGEX,
+)
 
 
 @dataclass(frozen=True)
@@ -160,9 +157,12 @@ class Note:
         if not isinstance(offset, Fraction):
             offset = Fraction(offset).limit_denominator(_LIMIT_DENOMINATOR)
 
-        name, rest = name.split("[")
-        rest = rest.rstrip("]")
-        duration = duration_str_to_fraction(rest)
+        if "[" in name:
+            name, rest = name.split("[")
+            rest = rest.rstrip("]")
+            duration = duration_str_to_fraction(rest)
+        else:
+            duration = Fraction(1)
 
         match = _PITCH_NAME_REGEX.match(name)
         if not match:
@@ -184,6 +184,16 @@ class Note:
             offset=offset,
             velocity=velocity
         )
+
+
+@lru_cache(maxsize=256)
+def midi_number_from_index_octave(index: int, octave: int) -> int:
+    """RA convenient function to get the MIDI number from the index and octave
+    Should be identical to Note(index, octave, ...).midi_number"""
+    step_number = (0, 4, 1, 5, 2, 6, 3)[index % 7]
+    alter = (index + 1) // 7
+    pitch_number = ([0, 2, 4, 5, 7, 9, 11][step_number] + alter)
+    return pitch_number + 12 * octave + 12
 
 
 def is_power_of_2(x: int):
@@ -248,6 +258,7 @@ _BASE_NOTE = {
 }
 
 
+@lru_cache(maxsize=1024)
 def duration_str_to_fraction(duration_str: str) -> Fraction:
     """Converts a duration string to a Fraction. Reverse of duration_to_str."""
     duration_str = duration_str.strip()
