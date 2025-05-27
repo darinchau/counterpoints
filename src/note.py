@@ -2,7 +2,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, asdict
-from functools import reduce
+from functools import reduce, cached_property
 from typing import Literal
 from fractions import Fraction
 
@@ -50,7 +50,7 @@ class Note:
         """Returns True if the note is a rest, i.e. has velocity 0."""
         return self.velocity == 0
 
-    @property
+    @cached_property
     def pitch_name(self) -> str:
         """Returns a note name of the pitch. e.g. A, C#, etc."""
         alter = self.alter
@@ -63,12 +63,12 @@ class Note:
         else:
             return f"{self.step}{'b' * -alter}"
 
-    @property
+    @cached_property
     def note_name(self):
         """The note name of the note. e.g. A4, C#5, etc."""
         return f"{self.pitch_name}{self.octave}[{self.duration_name}]"
 
-    @property
+    @cached_property
     def duration_name(self):
         """Returns the duration of the note in a compact notation
 
@@ -86,29 +86,29 @@ class Note:
         """
         return duration_to_str(self.duration)
 
-    @property
+    @cached_property
     def step(self) -> StepName:
         """Returns the diatonic step of the note"""
         idx = self.index % 7
         return ("C", "G", "D", "A", "E", "B", "F")[idx]
 
-    @property
+    @cached_property
     def step_number(self) -> int:
         """Returns the diatonic step number of the note, where C is 0, D is 1, etc."""
         idx = self.index % 7
         return (0, 4, 1, 5, 2, 6, 3)[idx]
 
-    @property
+    @cached_property
     def alter(self):
         """Returns the alteration of the note aka number of sharps. Flats are represented as negative numbers."""
         return (self.index + 1) // 7
 
-    @property
+    @cached_property
     def pitch_number(self):
         """Returns the chromatic pitch number of the note. C is 0, D is 2, etc. There are edge cases like B# returning 12 or Cb returning -1"""
         return ([0, 2, 4, 5, 7, 9, 11][self.step_number] + self.alter)
 
-    @property
+    @cached_property
     def midi_number(self):
         """The chromatic pitch number of the note, using the convention that A4=440Hz converts to 69
         This is also the MIDI number of the note."""
@@ -284,3 +284,46 @@ def duration_str_to_fraction(duration_str: str) -> Fraction:
 
 def _step_alter_to_lof_index(step: StepName, alter: int) -> int:
     return {"C": 0, "D": 2, "E": 4, "F": -1, "G": 1, "A": 3, "B": 5}[step] + 7 * alter
+
+
+def _test_dur_str():
+    tests = [
+        (1, 'q'),
+        (2, 'h'),
+        (4, 'w'),
+        (8, "w'"),
+        (12, "w'."),
+        (16, "w''"),
+        (3, 'h.'),
+        (1/2, 'r'),
+        (1/4, 's'),
+        (1/8, "s'"),
+        (1/16, "s''"),
+        (1/32, "s'''"),
+        (3/2, 'q.'),
+        (5, 'w+q'),
+        (6, 'w.'),
+        (7, 'w..'),
+        (9, "w'+q"),
+        (1/3, '3r'),
+        (1/5, '5s'),
+        (1/6, '6s'),
+        (1/7, '7s'),
+        (2/3, '3q'),
+        (4/3, '3h'),
+        (3/7, '7r.'),
+        (5/3, '3h+r')
+    ]
+
+    for dur, expected in tests:
+        result = duration_to_str(dur)
+        assert result == expected, f"Expected {expected} but got {result} for duration {dur}"
+        d = duration_str_to_fraction(expected)
+        assert math.isclose(d, dur), f"Expected {dur} but got {d} for duration string {expected}"
+
+    for i in range(1, 47):
+        for j in range(1, 47):
+            dur = Fraction(i, j)
+            result = duration_to_str(dur)
+            d = duration_str_to_fraction(result)
+            assert math.isclose(d, dur), f"Expected {dur} but got {d} for duration string {result}"

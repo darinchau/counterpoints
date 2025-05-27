@@ -1,9 +1,13 @@
 # A note system is like a canvas in which you can add notes and model constraints
 from __future__ import annotations
 import enum
+import typing
 from fractions import Fraction
 from .note import Note
 from dataclasses import dataclass, field, asdict
+
+if typing.TYPE_CHECKING:
+    from .constraints import ConstraintSystem
 
 
 class Rhythm:
@@ -41,14 +45,49 @@ class NotePool:
         self._notes: list[PooledNote] = []
         self._id_counter = 0
 
-    def get_note(self, note: Note):
+    def get_note(self, note: Note, **kwargs):
         """Get a note from the pool, or create a new one if it doesn't exist."""
         for n in self._notes:
             if n == note:
                 return n
-        new_note = PooledNote(**asdict(note))
+        nd = asdict(note)
+        nd.update(kwargs)
+        new_note = PooledNote(**nd)
         object.__setattr__(new_note, '_id', self._id_counter)
         object.__setattr__(new_note, '_parent', self)
         self._notes.append(new_note)
         self._id_counter += 1
         return new_note
+
+
+class Voice:
+    """A voice is a series of non-overlapping notes"""
+
+    def __init__(self, notes: list[Note]):
+        self._notes = sorted(notes, key=lambda x: x.offset)
+        self._check_nonoverlap()
+
+    @property
+    def low(self):
+        return min(self._notes, key=lambda x: x.midi_number)
+
+    @property
+    def high(self):
+        return max(self._notes, key=lambda x: x.midi_number)
+
+    def _check_nonoverlap(self):
+        for i in range(len(self._notes) - 1):
+            if self._notes[i].offset + self._notes[i].duration > self._notes[i + 1].offset:
+                raise ValueError(f"Notes overlap at index {i}")
+
+
+def generate_cantus_firmus(possible_note_set: list[Note], cs: ConstraintSystem, bars: int = 12, time_sig: str = "4/4"):
+    notepool = NotePool()
+    bar_length = 4 * Fraction(*map(int, time_sig.split('/')))
+    prev_bar_notes: list[PooledNote] | None = None
+    for i in range(bars):
+        bar_notes: list[PooledNote] = []
+        for n in possible_note_set:
+            note = notepool.get_note(n, offset=i * bar_length, duration=bar_length)
+            bar_notes.append(note)
+        cs.only_one_active_note(...)
