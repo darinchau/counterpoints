@@ -69,3 +69,4 @@ nohup.out
 *.midi
 !/resources/goldberg*
 !/resources/jsymbolic_explanation.txt
+*.lprof

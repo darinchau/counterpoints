@@ -93,7 +93,7 @@ class NoteSystem(ABC):
 class Bar(NoteSystem):
     """Represents a bar that encodes variables with all the possible notes and constraints"""
 
-    def __init__(self, bar_number: int):
+    def __init__(self, bar_number: int = 0):
         self.bar_number = bar_number
         self.voice_constraints: list[VoiceRange] = [
             VoiceRange(PIANO_A0, PIANO_C8)  # trim it to standard piano
@@ -126,7 +126,7 @@ class Bar(NoteSystem):
         # Only one note can be played at a time in a given voice
         ineq_constraints: list[Constraint] = []
         eq_constraints: list[Constraint] = []
-        variables = frozenset(self.get_variables())  # Just to avoid me accidentally modifying the set
+        variables = tuple(self.get_variables())  # Just to avoid me accidentally modifying the set
 
         # at most one note per rhythm per offset
         # sum_{p, r} x_{p, r, off} <= 1 for all off
@@ -161,12 +161,11 @@ class Bar(NoteSystem):
 
         # Non-overlapping constraints
         # x_{p, r, off} + x_{p', r', off'} <= 1 for all p != p, (off, off + r) overlaps with (off', off' + r')
-        for var1 in variables:
+        for i, var1 in enumerate(variables):
             if is_tie(var1):
                 continue
-            for var2 in variables:
-                if var1 >= var2:
-                    continue
+            for j in range(i + 1, len(variables)):
+                var2 = variables[j]
                 if is_tie(var2):
                     continue
                 start1, end1 = var1[2] / var1[1], (var1[2] + 1) / var1[1]
