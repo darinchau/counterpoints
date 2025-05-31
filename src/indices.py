@@ -82,3 +82,5 @@ class VariableIndex:
 
 
 Constraint = tuple[list[int], list[VariableIndex], int]  # Represents the constraints of type either Ax <= b or Cx = d
+System = tuple[list[VariableIndex], list[Constraint], list[Constraint]]  # Represents the variables, system of equations and inequalities to solve
+Solution = list[VariableIndex]  # Represent the list of variables that ought to be 1. Does not include aux variables

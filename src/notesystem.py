@@ -28,7 +28,7 @@ from .consts import (
     PIANO_A0, PIANO_C8, _LIMIT_DENOMINATOR,
     VoiceRange, KeyName, ModeName
 )
-from .indices import VariableIndex, Constraint
+from .indices import VariableIndex, Constraint, System
 
 
 class NoteSystem(ABC):
@@ -50,7 +50,7 @@ class NoteSystem(ABC):
         """
         raise NotImplementedError
 
-    def get_system(self) -> tuple[list[VariableIndex], list[Constraint], list[Constraint]]:
+    def get_system(self) -> System:
         all_vars = self.get_variables()
         ineq, eq = self.get_constraints()
         assert all(len(a) == len(x) for a, x, b in ineq)
