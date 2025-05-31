@@ -11,7 +11,7 @@ PIANO_C8 = 108              # MIDI number for C8
 _LIMIT_DENOMINATOR = 47     # Maximum number for tuplets. Can lift this if needed
 
 
-@dataclass(frozen=True, unsafe_hash=True, eq=True, slots=True)
+@dataclass(frozen=True, unsafe_hash=True, eq=True, slots=True, order=True)
 class VariableIndex:
     name: str           # A unique name for which bar/voice/whatever it came from
     duration: int       # Duration as an integer in that how many of these notes are there in a bar of 4/4. Like queavers notes will be 8

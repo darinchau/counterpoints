@@ -22,6 +22,7 @@ from fractions import Fraction
 from .note import Note, duration_str_to_fraction, midi_number_from_index_octave
 from dataclasses import dataclass, field, asdict
 from itertools import product
+import typing
 from collections import defaultdict
 from .consts import (
     PIANO_A0, PIANO_C8, _LIMIT_DENOMINATOR, VariableIndex, Constraint,
@@ -107,7 +108,7 @@ class Bar(NoteSystem):
             raise ValueError(f"Start and end must be between 0 and 4, with start < end; got {start} and {end}.")
         self.scale_constraints.append((start, end, set(scale)))
 
-    def group_by_start_end(self, variables: set[VariableIndex] | None = None) -> dict[tuple[float, float], list[VariableIndex]]:
+    def group_by_start_end(self, variables: typing.Iterable[VariableIndex] | None = None) -> dict[tuple[float, float], list[VariableIndex]]:
         # Group variables by start and end. If this is useful then reimplement it to NoteSystem class
         grouped = defaultdict(list)
         if variables is None:
@@ -123,7 +124,7 @@ class Bar(NoteSystem):
         # Only one note can be played at a time in a given voice
         ineq_constraints: list[Constraint] = []
         eq_constraints: list[Constraint] = []
-        variables = self.get_variables()
+        variables = sorted(self.get_variables())
 
         # Enough notes must be active to make up the bar (including rests)
         # sum_{p, r, off} r x_{p, r, off} = bar_length
@@ -143,15 +144,15 @@ class Bar(NoteSystem):
         grouped_vars = self.group_by_start_end(variables)
         for (s1, e1), vars1 in grouped_vars.items():
             for (s2, e2), vars2 in grouped_vars.items():
-                if s1 > s2:
+                if s1 > s2 or (s1 == s2 and e1 == e2):
                     continue
                 if s2 < e1:
-                    print(f"Overlap between {(s1, e1)} and {(s2, e2)}")
                     total_vars = len(vars1) + len(vars2)
                     ineq_constraints.append(([1] * total_vars, vars1 + vars2, 1))
 
         # Tied note constraints - if note 1 is active and tied then the next note must be active
-        # sum_{r, off} x_{p, r', off + r} >= x_{p, r, off} + x_{tie, r, off} - 1
+        # sum_{r'} x_{p, r', off + r} >= x_{p, r, off} X x_{tie, r, off} for all p, r, off
+        # Introduce an aux variable z: z >= x_{p, r, off} X x_{tie, r, off} >= x_{p, r, off} + x_{tie, r, off} - 1
         # If both the note and tie is active, then the set of all subsequent notes must have at least one
         # being active; otherwise the constraints are trivial. Rests cannot be tied
         for var in variables:
