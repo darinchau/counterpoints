@@ -25,9 +25,10 @@ from itertools import product
 import typing
 from collections import defaultdict
 from .consts import (
-    PIANO_A0, PIANO_C8, _LIMIT_DENOMINATOR, VariableIndex, Constraint,
+    PIANO_A0, PIANO_C8, _LIMIT_DENOMINATOR,
     VoiceRange, KeyName, ModeName
 )
+from .indices import VariableIndex, Constraint
 
 
 class NoteSystem(ABC):
@@ -41,20 +42,6 @@ class NoteSystem(ABC):
     def get_variables(self) -> set[VariableIndex]:
         raise NotImplementedError
 
-    def get_all_variables(self) -> set[VariableIndex]:
-        """Return all variables including those in the subclass"""
-        all_variables = self.get_variables()
-        for var, value in vars(self).items():
-            if isinstance(value, NoteSystem):
-                subclass_vars = value.get_all_variables()
-                # This says all variables must only be contained in one constraint system
-                if not all_variables.isdisjoint(subclass_vars):
-                    raise ValueError(
-                        f"Variable {var} in {self.__class__.__name__} conflicts with existing variables."
-                    )
-                all_variables.update(subclass_vars)
-        return all_variables
-
     @abstractmethod
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
         """Return a tuple of two lists:
@@ -63,21 +50,25 @@ class NoteSystem(ABC):
         """
         raise NotImplementedError
 
-    def get_all_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
-        all_vars = self.get_all_variables()
-        all_constraints = self.get_constraints()
-        # This check says all constraints in self must only contain variables from self or subclasses
-        # So this puts a limitation on how we organize constraints
-        assert all(x in all_vars for constraint in all_constraints[0] for x in constraint[1])
-        assert all(x in all_vars for constraint in all_constraints[1] for x in constraint[1])
-        assert all(len(a) == len(x) for a, x, b in all_constraints[0])
-        assert all(len(c) == len(x) for c, x, d in all_constraints[1])
+    def get_system(self) -> tuple[list[VariableIndex], list[Constraint], list[Constraint]]:
+        all_vars = self.get_variables()
+        ineq, eq = self.get_constraints()
+        assert all(len(a) == len(x) for a, x, b in ineq)
+        assert all(len(c) == len(x) for c, x, d in eq)
+        # Add back the aux variables that might have came up in the constraints
+        all_vars.update([x for _, var, _ in ineq for x in var])
+        all_vars.update([x for _, var, _ in eq for x in var])
         for var, value in vars(self).items():
             if isinstance(value, NoteSystem):
-                subclass_cons = value.get_all_constraints()
-                all_constraints[0].extend(subclass_cons[0])
-                all_constraints[1].extend(subclass_cons[1])
-        return all_constraints
+                subclass_vars, subclass_ineq, subclass_eq = value.get_system()
+                if not all_vars.isdisjoint(subclass_vars):
+                    raise ValueError(
+                        f"Variable {var} in {self.__class__.__name__} conflicts with existing variables."
+                    )
+                all_vars.update(subclass_vars)
+                ineq.extend(subclass_ineq)
+                eq.extend(subclass_eq)
+        return sorted(all_vars), ineq, eq
 
 
 class Bar(NoteSystem):
@@ -151,7 +142,7 @@ class Bar(NoteSystem):
                     ineq_constraints.append(([1] * total_vars, vars1 + vars2, 1))
 
         # Tied note constraints - if note 1 is active and tied then the next note must be active
-        # sum_{r'} x_{p, r', off + r} >= x_{p, r, off} X x_{tie, r, off} for all p, r, off
+        # sum_{r'} x_{p, r', off + r} >= z for all p, r, off
         # Introduce an aux variable z: z >= x_{p, r, off} X x_{tie, r, off} >= x_{p, r, off} + x_{tie, r, off} - 1
         # If both the note and tie is active, then the set of all subsequent notes must have at least one
         # being active; otherwise the constraints are trivial. Rests cannot be tied
@@ -170,7 +161,9 @@ class Bar(NoteSystem):
             ]
             if not constrained_vars:
                 continue
-            ineq_constraints.append(([1, 1] + [-1] * len(constrained_vars), [var, tie] + constrained_vars, 1))
+            z = VariableIndex(f"{self.bar_name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
+            ineq_constraints.append(([1, 1, -1], [var, tie, z], 1))
+            ineq_constraints.append(([1] + [-1] * len(constrained_vars), [z] + constrained_vars, 0))
         return (ineq_constraints, eq_constraints)
 
     def get_variables(self) -> set[VariableIndex]:
