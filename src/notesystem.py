@@ -164,6 +164,19 @@ class Bar(NoteSystem):
             z = VariableIndex(f"{self.bar_name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
             ineq_constraints.append(([1, 1, -1], [var, tie, z], 1))
             ineq_constraints.append(([1] + [-1] * len(constrained_vars), [z] + constrained_vars, 0))
+
+        # The tie variable also cannot be active if no notes are active
+        # And specifically the tie and the rest cannot be active at the same time
+        for _, vs in grouped_vars.items():
+            if not vs:
+                continue
+            tie = vs[0].get_tie()
+            rest = vs[0].get_rest()
+            if tie not in variables or rest not in variables:
+                continue
+            vs = [v for v in vs if not v.is_rest]
+            ineq_constraints.append(([1] + [-1] * len(vs), [tie] + vs, 0))
+            ineq_constraints.append(([1, 1], [tie, rest], 1))
         return (ineq_constraints, eq_constraints)
 
     def get_variables(self) -> set[VariableIndex]:
@@ -212,7 +225,10 @@ class Bar(NoteSystem):
                         octave=octave
                     ))
                 variables.add(VariableIndex.make_rest(self.bar_name, n_notes_in_bar, i))
-                variables.add(VariableIndex.make_tie(self.bar_name, n_notes_in_bar, i))
+                if i < n_notes_in_bar - 1:
+                    # Only add tie if it's not the last note in the bar
+                    # TODO add cross-bar tie constraints somewhere else
+                    variables.add(VariableIndex.make_tie(self.bar_name, n_notes_in_bar, i))
         return variables
 
 

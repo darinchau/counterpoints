@@ -1,9 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from fractions import Fraction
+from functools import total_ordering
+from .note import midi_number_from_index_octave
 
 
-@dataclass(frozen=True, unsafe_hash=True, eq=True, slots=True, order=True)
+@dataclass(frozen=True, unsafe_hash=True, eq=True, slots=True)
+@total_ordering
 class VariableIndex:
     name: str
     # A unique name for which bar/voice/whatever it came from. Useful purely for indexing and bookkeeping
@@ -67,6 +70,10 @@ class VariableIndex:
         """Calculate the end position of the note in a bar."""
         return (self.offset + 1) / self.duration
 
+    @property
+    def midi_number(self) -> int:
+        return midi_number_from_index_octave(self.index, self.octave)
+
     def __repr__(self) -> str:
         """String representation of the VariableIndex."""
         from .note import duration_to_str, Note
@@ -79,6 +86,11 @@ class VariableIndex:
             n = Note(self.index, self.octave, Fraction(1), Fraction(1), 1)
             var_type = f"{n.pitch_name}{n.octave}"
         return f"VariableIndex(bar {self.name}, {self.offset}-th {duration_to_str(Fraction(4, self.duration))} note, {var_type})"
+
+    def __lt__(self, other: VariableIndex) -> bool:
+        sp = (self.start, self.end, self.midi_number, self.index, self.name)
+        op = (other.start, other.end, other.midi_number, other.index, other.name)
+        return sp < op
 
 
 Constraint = tuple[list[int], list[VariableIndex], int]  # Represents the constraints of type either Ax <= b or Cx = d
