@@ -93,8 +93,8 @@ class NoteSystem(ABC):
 class Bar(NoteSystem):
     """Represents a bar that encodes variables with all the possible notes and constraints"""
 
-    def __init__(self, bar_number: int = 0):
-        self.bar_number = bar_number
+    def __init__(self, bar_name: str = ""):
+        self.bar_name = bar_name
         self.voice_constraints: list[VoiceRange] = [
             VoiceRange(PIANO_A0, PIANO_C8)  # trim it to standard piano
         ]
@@ -120,9 +120,6 @@ class Bar(NoteSystem):
 
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
         """Return constraints of the form Ax <= b and Cx = d."""
-        def is_tie(v: VariableIndex):
-            return len(v) == 4 and v[3] == 1
-
         # Only one note can be played at a time in a given voice
         ineq_constraints: list[Constraint] = []
         eq_constraints: list[Constraint] = []
@@ -132,10 +129,10 @@ class Bar(NoteSystem):
         # sum_{p, r} x_{p, r, off} <= 1 for all off
         one_note_offset_vars: dict[tuple[int, int], list[VariableIndex]] = defaultdict(list)
         for var in variables:
-            if is_tie(var):
+            if var.is_tie:
                 # Exclude the tie variable
                 continue
-            one_note_offset_vars[(var[1], var[2])].append(var)
+            one_note_offset_vars[(var.duration, var.offset)].append(var)
         for (n_notes_in_bar, offset), vars_ in one_note_offset_vars.items():
             if not vars_:
                 continue
@@ -148,12 +145,12 @@ class Bar(NoteSystem):
         # sum_{p, r, off} r x_{p, r, off} = 4
         active_note_length_vars = []
         active_note_length_coeff = []
-        lcm_denominator = math.lcm(*[x[1] for x in variables])
+        lcm_denominator = math.lcm(*[x.duration for x in variables])
         for var in variables:
-            if is_tie(var):
+            if var.is_tie:
                 continue
             active_note_length_vars.append(var)
-            active_note_length_coeff.append(lcm_denominator // var[1])
+            active_note_length_coeff.append(lcm_denominator // var.duration)
         if active_note_length_vars:
             # This is the only equality constraint
             eq_constraints.append((active_note_length_coeff, active_note_length_vars, lcm_denominator))
@@ -162,14 +159,14 @@ class Bar(NoteSystem):
         # Non-overlapping constraints
         # x_{p, r, off} + x_{p', r', off'} <= 1 for all p != p, (off, off + r) overlaps with (off', off' + r')
         for i, var1 in enumerate(variables):
-            if is_tie(var1):
+            if var1.is_tie:
                 continue
             for j in range(i + 1, len(variables)):
                 var2 = variables[j]
-                if is_tie(var2):
+                if var2.is_tie:
                     continue
-                start1, end1 = var1[2] / var1[1], (var1[2] + 1) / var1[1]
-                start2, end2 = var2[2] / var2[1], (var2[2] + 1) / var2[1]
+                start1, end1 = var1.start, var1.end
+                start2, end2 = var2.start, var2.end
                 if start1 > start2:
                     # Ensure that start1 <= start2
                     start1, end1, start2, end2 = start2, end2, start1, end1
@@ -178,12 +175,10 @@ class Bar(NoteSystem):
                     # Add a constraint: at most one of them can be active
                     ineq_constraints.append(([1, 1], [var1, var2], 1))
                     # print(f"Adding non-overlapping constraint for {var1} and {var2}")
-                elif start2 == end1 and (
-                    len(var1) == 5 and len(var2) == 5 and var1[3] == var2[3] and var1[4] == var2[4]
-                ):
+                elif start2 == end1 and var1.index == var2.index and var1.offset == var2.offset:
                     # A note can be tied to its next note when the tie variable is active
                     # or if x_{tie, r, off} = 1, then x{p, r, off} = x_{p, r', off + r} for all p, r, off, r'
-                    tie1 = (self.bar_number, var1[1], var1[2], 1)  # Tie variable for var1
+                    tie1 = VariableIndex.make_tie(var1.name, var1.duration, var1.offset)
                     if tie1 not in variables:
                         continue
                     ineq_constraints.append(([1, -1, 1], [var1, var2, tie1], 1))
@@ -230,9 +225,15 @@ class Bar(NoteSystem):
                         continue
                     # N + 2 variables per note: note activation, tie, rest
                     # Using i and n_notes_in_bar as a proxy for the offset and duration
-                    variables.add((self.bar_number, n_notes_in_bar, i, index, octave))
-                variables.add((self.bar_number, n_notes_in_bar, i, 0))  # For the rest
-                variables.add((self.bar_number, n_notes_in_bar, i, 1))  # For the tie
+                    variables.add(VariableIndex(
+                        name=self.bar_name,
+                        duration=n_notes_in_bar,
+                        offset=i,
+                        index=index,
+                        octave=octave
+                    ))
+                variables.add(VariableIndex.make_rest(self.bar_name, n_notes_in_bar, i))
+                variables.add(VariableIndex.make_tie(self.bar_name, n_notes_in_bar, i))
         return variables
 
 
