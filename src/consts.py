@@ -1,3 +1,4 @@
+from __future__ import annotations
 import typing
 import re
 from dataclasses import dataclass
@@ -29,14 +30,26 @@ class VariableIndex:
         return self.octave == 10 and self.index == 0
 
     @classmethod
-    def make_tie(cls, name: str, duration: int, offset: int) -> 'VariableIndex':
+    def make_tie(cls, name: str, duration: int, offset: int) -> VariableIndex:
         """Create a tie variable."""
         return cls(name, duration, offset, 1, 10)
 
     @classmethod
-    def make_rest(cls, name: str, duration: int, offset: int) -> 'VariableIndex':
+    def make_rest(cls, name: str, duration: int, offset: int) -> VariableIndex:
         """Create a rest variable."""
         return cls(name, duration, offset, 0, 10)
+
+    def get_tie(self) -> VariableIndex:
+        """Get the tie variable for this note."""
+        if self.is_tie:
+            return self
+        return VariableIndex.make_tie(self.name, self.duration, self.offset)
+
+    def get_rest(self) -> VariableIndex:
+        """Get the rest variable for this note."""
+        if self.is_rest:
+            return self
+        return VariableIndex.make_rest(self.name, self.duration, self.offset)
 
     @property
     def start(self) -> float:

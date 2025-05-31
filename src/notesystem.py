@@ -12,17 +12,6 @@
 #
 # In reality, we will index p by LOF index and octave separately cuz we thought this might be easier
 # to make accurate constraints and stuff in the future
-#
-# Basic constraints:
-#   - Only one note can be played at a time in a given voice
-#   - - sum_{p, r} x_{p, r, off} <= 1 for all off
-#   - Enough notes must be active to make up the bar (including rests)
-#   - - sum_{p, r, off} r x_{p, r, off} = 4
-#   - This also yields all the non-overlapping constraints
-#   - - x_{p, r, off} + x_{p', r', off'} <= 1 for all p != p', (off, off + r) overlaps with (off', off' + r')
-#   - A note can be tied to its next note when the tie variable is active
-#   - or if x_{tie, r, off} = 1, then x{p, r, off} = x_{p, r', off + r} for all p, r, off, r'
-#   - - |x{p, r, off} - x_{p, r', off + r}| <= 1 - x_{tie, r, off}
 
 from __future__ import annotations
 import enum
@@ -118,31 +107,26 @@ class Bar(NoteSystem):
             raise ValueError(f"Start and end must be between 0 and 4, with start < end; got {start} and {end}.")
         self.scale_constraints.append((start, end, set(scale)))
 
+    def group_by_start_end(self, variables: set[VariableIndex] | None = None) -> dict[tuple[float, float], list[VariableIndex]]:
+        # Group variables by start and end. If this is useful then reimplement it to NoteSystem class
+        grouped = defaultdict(list)
+        if variables is None:
+            variables = self.get_variables()
+        for var in variables:
+            if var.is_tie:
+                continue
+            grouped[(var.start, var.end)].append(var)
+        return grouped
+
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
         """Return constraints of the form Ax <= b and Cx = d."""
         # Only one note can be played at a time in a given voice
         ineq_constraints: list[Constraint] = []
         eq_constraints: list[Constraint] = []
-        variables = tuple(self.get_variables())  # Just to avoid me accidentally modifying the set
-
-        # at most one note per rhythm per offset
-        # sum_{p, r} x_{p, r, off} <= 1 for all off
-        one_note_offset_vars: dict[tuple[int, int], list[VariableIndex]] = defaultdict(list)
-        for var in variables:
-            if var.is_tie:
-                # Exclude the tie variable
-                continue
-            one_note_offset_vars[(var.duration, var.offset)].append(var)
-        for (n_notes_in_bar, offset), vars_ in one_note_offset_vars.items():
-            if not vars_:
-                continue
-            # Create a constraint for this offset
-            constraint = [1] * len(vars_)
-            ineq_constraints.append((constraint, vars_, 1))
-            # print(f"Adding constraint for {n_notes_in_bar}th notes at offset {offset}")
+        variables = self.get_variables()
 
         # Enough notes must be active to make up the bar (including rests)
-        # sum_{p, r, off} r x_{p, r, off} = 4
+        # sum_{p, r, off} r x_{p, r, off} = bar_length
         active_note_length_vars = []
         active_note_length_coeff = []
         lcm_denominator = math.lcm(*[x.duration for x in variables])
@@ -152,39 +136,40 @@ class Bar(NoteSystem):
             active_note_length_vars.append(var)
             active_note_length_coeff.append(lcm_denominator // var.duration)
         if active_note_length_vars:
-            # This is the only equality constraint
             eq_constraints.append((active_note_length_coeff, active_note_length_vars, lcm_denominator))
-            # print(f"Adding equality constraint for active note lengths: {lcm_denominator}")
 
-        # Non-overlapping constraints
-        # x_{p, r, off} + x_{p', r', off'} <= 1 for all p != p, (off, off + r) overlaps with (off', off' + r')
-        for i, var1 in enumerate(variables):
-            if var1.is_tie:
-                continue
-            for j in range(i + 1, len(variables)):
-                var2 = variables[j]
-                if var2.is_tie:
+        # Non-overlap constraints
+        # For each two groups of variables that overlap in time, we add a constraint
+        grouped_vars = self.group_by_start_end(variables)
+        for (s1, e1), vars1 in grouped_vars.items():
+            for (s2, e2), vars2 in grouped_vars.items():
+                if s1 > s2:
                     continue
-                start1, end1 = var1.start, var1.end
-                start2, end2 = var2.start, var2.end
-                if start1 > start2:
-                    # Ensure that start1 <= start2
-                    start1, end1, start2, end2 = start2, end2, start1, end1
-                    var1, var2 = var2, var1
-                if start2 < end1:
-                    # Add a constraint: at most one of them can be active
-                    ineq_constraints.append(([1, 1], [var1, var2], 1))
-                    # print(f"Adding non-overlapping constraint for {var1} and {var2}")
-                elif start2 == end1 and var1.index == var2.index and var1.offset == var2.offset:
-                    # A note can be tied to its next note when the tie variable is active
-                    # or if x_{tie, r, off} = 1, then x{p, r, off} = x_{p, r', off + r} for all p, r, off, r'
-                    tie1 = VariableIndex.make_tie(var1.name, var1.duration, var1.offset)
-                    if tie1 not in variables:
-                        continue
-                    ineq_constraints.append(([1, -1, 1], [var1, var2, tie1], 1))
-                    ineq_constraints.append(([1, -1, 1], [var2, var1, tie1], 1))
-                    # print(f"Adding tie constraint between notes {var1} and {var2}")
+                if s2 < e1:
+                    print(f"Overlap between {(s1, e1)} and {(s2, e2)}")
+                    total_vars = len(vars1) + len(vars2)
+                    ineq_constraints.append(([1] * total_vars, vars1 + vars2, 1))
 
+        # Tied note constraints - if note 1 is active and tied then the next note must be active
+        # sum_{r, off} x_{p, r', off + r} >= x_{p, r, off} + x_{tie, r, off} - 1
+        # If both the note and tie is active, then the set of all subsequent notes must have at least one
+        # being active; otherwise the constraints are trivial. Rests cannot be tied
+        for var in variables:
+            if var.is_tie or var.is_rest:
+                continue
+            tie = var.get_tie()
+            if tie not in variables:
+                continue
+            constrained_vars = [
+                v for v in variables if
+                v.start == var.end and
+                v.index == var.index and
+                v.octave == var.octave and
+                v.name == var.name
+            ]
+            if not constrained_vars:
+                continue
+            ineq_constraints.append(([1, 1] + [-1] * len(constrained_vars), [var, tie] + constrained_vars, 1))
         return (ineq_constraints, eq_constraints)
 
     def get_variables(self) -> set[VariableIndex]:
