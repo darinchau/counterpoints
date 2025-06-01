@@ -28,7 +28,7 @@ from .consts import (
     PIANO_A0, PIANO_C8, _LIMIT_DENOMINATOR,
     VoiceRange, KeyName, ModeName
 )
-from .indices import VariableIndex, Constraint, System
+from .indices import VariableIndex, Constraint, System, Solution
 
 
 class NoteSystem(ABC):
@@ -344,3 +344,50 @@ def get_scale(key: KeyName, mode: ModeName) -> list[int]:
     else:
         raise ValueError(f"Unsupported mode: {mode}")
     return [key_idx + offset for offset in mode_lof]
+
+
+def get_grid_score(b: BarGrid, solution: Solution):
+    from music21 import stream, note, clef, key, tie
+    from music21.meter import base as meter
+    from fractions import Fraction
+
+    def get_note_by_offset(stream, target_offset):
+        elements = stream.getElementsByOffset(target_offset, target_offset, includeEndBoundary=False)
+        for element in elements:
+            if isinstance(element, note.Note) or isinstance(element, note.Rest):
+                return element
+        return None
+
+    assert solution is not None
+    s = stream.Score()
+
+    for voice in b.grid:
+        part = stream.Part()
+        part.partName = voice
+        partname = f"{b.name}_{voice}"
+        midinumber = [n.midi_number for n in solution if n.name.startswith(partname) and n.is_note]
+        c = clef.TrebleClef() if min(midinumber) >= 50 else clef.BassClef() if max(midinumber) <= 69 else clef.TrebleClef()
+        part.append(c)
+        part.append(meter.TimeSignature("4/4"))
+        part.append(key.KeySignature(0))  # TODO add key signature from the solution
+        for i in range(b.n_bars):
+            name = f"{b.name}_{voice}_{i}"
+            measure = stream.Measure(number=i + 1)
+            notes_bar = sorted([n for n in solution if n.name == name and not n.aux])
+            for n in notes_bar:
+                duration = Fraction(4, n.duration)
+                if n.is_note:
+                    nv = n.get_note()
+                    measure.append(note.Note(nameWithOctave=f"{nv.pitch_name}{nv.octave}", quarterLength=duration))
+                elif n.is_rest:
+                    measure.append(note.Rest(quarterLength=duration))
+            for n in notes_bar:
+                if n.is_tie:
+                    offset = Fraction(4 * n.offset, n.duration)
+                    tied_note = get_note_by_offset(measure, n.offset)
+                    if not isinstance(tied_note, note.Note):
+                        raise ValueError(f"Error rendering solution - cannot find note associated with tie in voice {voice} bar {i} beat {offset}")
+                    tied_note.tie = tie.Tie('start')
+            part.append(measure)
+        s.append(part)
+    return s

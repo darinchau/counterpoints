@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from fractions import Fraction
 from functools import total_ordering, cached_property
-from .note import midi_number_from_index_octave
+from .note import midi_number_from_index_octave, Note
 from .consts import _LIMIT_DENOMINATOR
 
 
@@ -39,6 +39,11 @@ class VariableIndex:
         """Check if this variable is a rest variable."""
         return self.octave == 10 and self.index == 0
 
+    @property
+    def is_note(self) -> bool:
+        """Check if this variable is a note variable."""
+        return -1 <= self.octave <= 9 and not self.aux
+
     @classmethod
     def make_tie(cls, name: str, duration: int, offset: int) -> VariableIndex:
         """Create a tie variable."""
@@ -60,6 +65,15 @@ class VariableIndex:
         if self.is_rest:
             return self
         return VariableIndex.make_rest(self.name, self.duration, self.offset)
+
+    def get_note(self) -> Note:
+        return Note(
+            self.index,
+            self.octave,
+            Fraction(4, self.duration),
+            Fraction(4 * self.offset, self.duration),
+            64
+        )
 
     @cached_property
     def start(self):
