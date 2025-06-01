@@ -17,12 +17,12 @@ from __future__ import annotations
 import enum
 import typing
 import math
+import copy
 from abc import ABC, abstractmethod
 from fractions import Fraction
 from .note import Note, duration_str_to_fraction, midi_number_from_index_octave
 from dataclasses import dataclass, field, asdict
 from itertools import product
-import typing
 from collections import defaultdict
 from .consts import (
     PIANO_A0, PIANO_C8, _LIMIT_DENOMINATOR,
@@ -49,6 +49,17 @@ class NoteSystem(ABC):
         - The second list contains constraints of the form Cx = d
         """
         raise NotImplementedError
+
+    def group_by_start_end(self, variables: typing.Iterable[VariableIndex] | None = None) -> dict[tuple[float, float], list[VariableIndex]]:
+        # Group variables by start and end. If this is useful then reimplement it to NoteSystem class
+        grouped = defaultdict(list)
+        if variables is None:
+            variables = self.get_variables()
+        for var in variables:
+            if var.is_tie:
+                continue
+            grouped[(var.start, var.end)].append(var)
+        return grouped
 
     def get_system(self) -> System:
         all_vars = self.get_variables()
@@ -98,17 +109,6 @@ class Bar(NoteSystem):
         if start >= end or not (0 <= start < 4) or not (0 < end <= 4):
             raise ValueError(f"Start and end must be between 0 and 4, with start < end; got {start} and {end}.")
         self.scale_constraints.append((start, end, set(scale)))
-
-    def group_by_start_end(self, variables: typing.Iterable[VariableIndex] | None = None) -> dict[tuple[float, float], list[VariableIndex]]:
-        # Group variables by start and end. If this is useful then reimplement it to NoteSystem class
-        grouped = defaultdict(list)
-        if variables is None:
-            variables = self.get_variables()
-        for var in variables:
-            if var.is_tie:
-                continue
-            grouped[(var.start, var.end)].append(var)
-        return grouped
 
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
         """Return constraints of the form Ax <= b and Cx = d."""
@@ -230,6 +230,52 @@ class Bar(NoteSystem):
                     # TODO add cross-bar tie constraints somewhere else
                     variables.add(VariableIndex.make_tie(self.bar_name, n_notes_in_bar, i))
         return variables
+
+
+class BarGrid(NoteSystem):
+    """Represents a grid of bars with vertical alignment (voices) and horizontal alignment (bars)."""
+
+    def __init__(self, name: str, n_bars: int = 64, voice_names: typing.Iterable[str] = ("Soprano", "Alto", "Tenor", "Bass")):
+        self._name = name
+        self._n_bars = n_bars
+        self._voice_names = list(voice_names)
+        if len(self._voice_names) < 1:
+            raise ValueError("At least one voice name must be provided.")
+        self._bars: dict[str, list[Bar | None]] = {k: [None] * n_bars for k in self._voice_names}
+
+    @property
+    def name(self) -> str:
+        """Returns the name of the grid."""
+        return self._name
+
+    @property
+    def n_bars(self) -> int:
+        """Returns the number of bars in the grid."""
+        return self._n_bars
+
+    @property
+    def voice_names(self) -> list[str]:
+        """Returns the list of voice names in the grid."""
+        return copy.deepcopy(self._voice_names)
+
+    def add_bar(self, voice_name: str, bar_number: int, bar: Bar):
+        """Adds a bar to the grid."""
+        if not isinstance(bar, Bar):
+            raise TypeError("bar must be an instance of Bar.")
+        if voice_name not in self._bars:
+            raise ValueError(f"Voice {voice_name} does not exist in the grid.")
+        if bar_number < 0 or bar_number >= self._n_bars:
+            raise ValueError(f"Bar number {bar_number} is out of range. Must be between 0 and {self._n_bars - 1}.")
+        if self._bars[voice_name][bar_number] is not None:
+            raise ValueError(f"Bar {bar_number} in voice {voice_name} already exists.")
+        self._bars[voice_name][bar_number] = bar
+        bar.bar_name = f"{voice_name}_{bar_number}"
+
+    def get_variables(self) -> set[VariableIndex]:
+        raise NotImplementedError
+
+    def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
+        raise NotImplementedError
 
 
 def get_scale(key: KeyName, mode: ModeName) -> list[int]:
