@@ -59,18 +59,25 @@ class Bar(NoteSystem):
     """Represents a bar that encodes variables with all the possible notes and constraints"""
 
     def __init__(self, bar_name: str = ""):
-        self.bar_name = bar_name
-        self.voice_constraints: list[VoiceRange] = [
+        self._bar_name = bar_name
+        self._voice_constraints: list[VoiceRange] = [
             VoiceRange(PIANO_A0, PIANO_C8)  # trim it to standard piano
         ]
-        self.scale_constraints: list[tuple[Fraction, Fraction, set[int]]] = []
-        self.permitted_notes = set("qhwrs")
+        self._scale_constraints: list[tuple[Fraction, Fraction, set[int]]] = []
+        self._permitted_notes = set("qhwrs")
+        self._variables: set[VariableIndex] | None = None
+
+    @property
+    def bar_name(self) -> str:
+        """Returns the name of the bar."""
+        return self._bar_name
 
     def add_voice_constraint(self, voice_range: VoiceRange):
         """Add a voice constraint to the bar."""
         if not isinstance(voice_range, range):
             raise TypeError("Voice range must be a range object.")
-        self.voice_constraints.append(voice_range)
+        self._voice_constraints.append(voice_range)
+        self._variables = None
 
     def add_scale_constraint(self, key: KeyName, mode: ModeName, start=0, end=4):
         """Add a scale constraint to the bar at the given key and mode from bar offset start to end."""
@@ -81,7 +88,20 @@ class Bar(NoteSystem):
             end = Fraction(end).limit_denominator(_LIMIT_DENOMINATOR)
         if start >= end or not (0 <= start < 4) or not (0 < end <= 4):
             raise ValueError(f"Start and end must be between 0 and 4, with start < end; got {start} and {end}.")
-        self.scale_constraints.append((start, end, set(scale)))
+        self._scale_constraints.append((start, end, set(scale)))
+        self._variables = None
+
+    def change_permitted_notes(self, permitted_notes: typing.Iterable[str]):
+        """Change the permitted notes in the bar."""
+        if not isinstance(permitted_notes, (list, set, tuple)):
+            raise TypeError("Permitted notes must be a list, set or tuple.")
+        for n in permitted_notes:
+            try:
+                duration_str_to_fraction(n)
+            except ValueError:
+                raise ValueError(f"Invalid note duration: {n}.")
+        self._permitted_notes = set(permitted_notes)
+        self._variables = None
 
     def group_by_start_end(
         self,
@@ -91,6 +111,7 @@ class Bar(NoteSystem):
         grouped = defaultdict(list)
         if variables is None:
             variables = self.get_variables()
+        assert variables is not None
         for var in variables:
             if var.is_tie:
                 continue
@@ -100,11 +121,13 @@ class Bar(NoteSystem):
     def get_variables(self) -> set[VariableIndex]:
         # Index: (bar, index, octave, rhythm (note duration), offset)
         # This is like the most inefficient way of doing it
+        if self._variables is not None:
+            return self._variables
         bar_length = Fraction(4)
-        min_scale_deg = min(min(x[2]) for x in self.scale_constraints)
-        max_scale_deg = max(max(x[2]) for x in self.scale_constraints)
+        min_scale_deg = min(min(x[2]) for x in self._scale_constraints)
+        max_scale_deg = max(max(x[2]) for x in self._scale_constraints)
         variables: set[VariableIndex] = set()
-        for dur in self.permitted_notes:
+        for dur in self._permitted_notes:
             note_length = duration_str_to_fraction(dur)
             n_notes_in_bar = bar_length / note_length
             if n_notes_in_bar.denominator != 1:
@@ -120,14 +143,14 @@ class Bar(NoteSystem):
                 end_ql = 4 * Fraction(i + 1, n_notes_in_bar)
                 # Sanity check
                 assert end_ql == start_ql + note_length, f"End of note {end_ql} does not match start {start_ql} + length {note_length}."
-                for start, end, scale in self.scale_constraints:
+                for start, end, scale in self._scale_constraints:
                     if start > end_ql or end > start_ql:
                         # The interval does not intersect with the scale constraint time
                         continue
                     permitted_indices &= scale
                 if not permitted_indices:
                     continue
-                for voice in self.voice_constraints:
+                for voice in self._voice_constraints:
                     permitted_pitches &= set(voice)
                 for index, octave in product(permitted_indices, range(-1, 9)):
                     note_midi_number = midi_number_from_index_octave(index, octave)
@@ -136,17 +159,18 @@ class Bar(NoteSystem):
                     # N + 2 variables per note: note activation, tie, rest
                     # Using i and n_notes_in_bar as a proxy for the offset and duration
                     variables.add(VariableIndex(
-                        name=self.bar_name,
+                        name=self._bar_name,
                         duration=n_notes_in_bar,
                         offset=i,
                         index=index,
                         octave=octave
                     ))
-                variables.add(VariableIndex.make_rest(self.bar_name, n_notes_in_bar, i))
+                variables.add(VariableIndex.make_rest(self._bar_name, n_notes_in_bar, i))
                 if i < n_notes_in_bar - 1:
                     # Only add tie if it's not the last note in the bar
                     # TODO add cross-bar tie constraints somewhere else
-                    variables.add(VariableIndex.make_tie(self.bar_name, n_notes_in_bar, i))
+                    variables.add(VariableIndex.make_tie(self._bar_name, n_notes_in_bar, i))
+        self._variables = variables
         return variables
 
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
@@ -205,7 +229,7 @@ class Bar(NoteSystem):
             ]
             if not constrained_vars:
                 continue
-            z = VariableIndex(f"{self.bar_name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
+            z = VariableIndex(f"{self._bar_name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
             ineq_constraints.append(([1, 1, -1], [var, tie, z], 1))
             ineq_constraints.append(([1] + [-1] * len(constrained_vars), [z] + constrained_vars, 0))
 
@@ -276,7 +300,10 @@ class BarGrid(NoteSystem):
                 bar_ineq, bar_eq = var.get_constraints()
                 ineq.extend(bar_ineq)
                 eq.extend(bar_eq)
-            variables = [self.grid[voice][i].get_variables() for i in range(self._n_bars)]
+            variables = [
+                self.grid[voice][i].get_variables()
+                for i in range(self._n_bars)
+            ]
             # Tie constraints in between bars
             for i in range(self._n_bars - 1):
                 bar1_end = set([
