@@ -1,11 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from fractions import Fraction
-from functools import total_ordering
+from functools import total_ordering, cached_property
 from .note import midi_number_from_index_octave
+from .consts import _LIMIT_DENOMINATOR
 
 
-@dataclass(frozen=True, unsafe_hash=True, eq=True, slots=True)
+@dataclass(frozen=True, unsafe_hash=True, eq=True)
 @total_ordering
 class VariableIndex:
     name: str
@@ -60,17 +61,17 @@ class VariableIndex:
             return self
         return VariableIndex.make_rest(self.name, self.duration, self.offset)
 
-    @property
-    def start(self) -> float:
+    @cached_property
+    def start(self):
         """Calculate the start position of the note in a bar."""
-        return self.offset / self.duration
+        return Fraction(self.offset, self.duration).limit_denominator(_LIMIT_DENOMINATOR)
 
-    @property
-    def end(self) -> float:
+    @cached_property
+    def end(self):
         """Calculate the end position of the note in a bar."""
-        return (self.offset + 1) / self.duration
+        return Fraction(self.offset + 1, self.duration).limit_denominator(_LIMIT_DENOMINATOR)
 
-    @property
+    @cached_property
     def midi_number(self) -> int:
         return midi_number_from_index_octave(self.index, self.octave)
 

@@ -35,12 +35,7 @@ class NoteSystem(ABC):
     """Defines a system that organizes notes and constraints.
     All the variables are assumed to be 0/1 variables and are indexed by integers.
 
-    Implement get_variables() to return a set of all variables from your own
-    and get_constraints() to return a set of all constraints."""
-
-    @abstractmethod
-    def get_variables(self) -> set[VariableIndex]:
-        raise NotImplementedError
+    Subclasses should implement get_constraints() to return a set of all constraints."""
 
     @abstractmethod
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
@@ -50,35 +45,13 @@ class NoteSystem(ABC):
         """
         raise NotImplementedError
 
-    def group_by_start_end(self, variables: typing.Iterable[VariableIndex] | None = None) -> dict[tuple[float, float], list[VariableIndex]]:
-        # Group variables by start and end. If this is useful then reimplement it to NoteSystem class
-        grouped = defaultdict(list)
-        if variables is None:
-            variables = self.get_variables()
-        for var in variables:
-            if var.is_tie:
-                continue
-            grouped[(var.start, var.end)].append(var)
-        return grouped
-
     def get_system(self) -> System:
-        all_vars = self.get_variables()
         ineq, eq = self.get_constraints()
         assert all(len(a) == len(x) for a, x, b in ineq)
         assert all(len(c) == len(x) for c, x, d in eq)
         # Add back the aux variables that might have came up in the constraints
-        all_vars.update([x for _, var, _ in ineq for x in var])
+        all_vars = set([x for _, var, _ in ineq for x in var])
         all_vars.update([x for _, var, _ in eq for x in var])
-        for var, value in vars(self).items():
-            if isinstance(value, NoteSystem):
-                subclass_vars, subclass_ineq, subclass_eq = value.get_system()
-                if not all_vars.isdisjoint(subclass_vars):
-                    raise ValueError(
-                        f"Variable {var} in {self.__class__.__name__} conflicts with existing variables."
-                    )
-                all_vars.update(subclass_vars)
-                ineq.extend(subclass_ineq)
-                eq.extend(subclass_eq)
         return sorted(all_vars), ineq, eq
 
 
@@ -110,74 +83,19 @@ class Bar(NoteSystem):
             raise ValueError(f"Start and end must be between 0 and 4, with start < end; got {start} and {end}.")
         self.scale_constraints.append((start, end, set(scale)))
 
-    def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
-        """Return constraints of the form Ax <= b and Cx = d."""
-        # Only one note can be played at a time in a given voice
-        ineq_constraints: list[Constraint] = []
-        eq_constraints: list[Constraint] = []
-        variables = sorted(self.get_variables())
-
-        # Enough notes must be active to make up the bar (including rests)
-        # sum_{p, r, off} r x_{p, r, off} = bar_length
-        active_note_length_vars = []
-        active_note_length_coeff = []
-        lcm_denominator = math.lcm(*[x.duration for x in variables])
+    def group_by_start_end(
+        self,
+        variables: typing.Iterable[VariableIndex] | None = None
+    ) -> dict[tuple[Fraction, Fraction], list[VariableIndex]]:
+        # Group variables by start and end. If this is useful then reimplement it to NoteSystem class
+        grouped = defaultdict(list)
+        if variables is None:
+            variables = self.get_variables()
         for var in variables:
             if var.is_tie:
                 continue
-            active_note_length_vars.append(var)
-            active_note_length_coeff.append(lcm_denominator // var.duration)
-        if active_note_length_vars:
-            eq_constraints.append((active_note_length_coeff, active_note_length_vars, lcm_denominator))
-
-        # Non-overlap constraints
-        # For each two groups of variables that overlap in time, we add a constraint
-        grouped_vars = self.group_by_start_end(variables)
-        for (s1, e1), vars1 in grouped_vars.items():
-            for (s2, e2), vars2 in grouped_vars.items():
-                if s1 > s2 or (s1 == s2 and e1 == e2):
-                    continue
-                if s2 < e1:
-                    total_vars = len(vars1) + len(vars2)
-                    ineq_constraints.append(([1] * total_vars, vars1 + vars2, 1))
-
-        # Tied note constraints - if note 1 is active and tied then the next note must be active
-        # sum_{r'} x_{p, r', off + r} >= z for all p, r, off
-        # Introduce an aux variable z: z >= x_{p, r, off} X x_{tie, r, off} >= x_{p, r, off} + x_{tie, r, off} - 1
-        # If both the note and tie is active, then the set of all subsequent notes must have at least one
-        # being active; otherwise the constraints are trivial. Rests cannot be tied
-        for var in variables:
-            if var.is_tie or var.is_rest:
-                continue
-            tie = var.get_tie()
-            if tie not in variables:
-                continue
-            constrained_vars = [
-                v for v in variables if
-                v.start == var.end and
-                v.index == var.index and
-                v.octave == var.octave and
-                v.name == var.name
-            ]
-            if not constrained_vars:
-                continue
-            z = VariableIndex(f"{self.bar_name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
-            ineq_constraints.append(([1, 1, -1], [var, tie, z], 1))
-            ineq_constraints.append(([1] + [-1] * len(constrained_vars), [z] + constrained_vars, 0))
-
-        # The tie variable also cannot be active if no notes are active
-        # And specifically the tie and the rest cannot be active at the same time
-        for _, vs in grouped_vars.items():
-            if not vs:
-                continue
-            tie = vs[0].get_tie()
-            rest = vs[0].get_rest()
-            if tie not in variables or rest not in variables:
-                continue
-            vs = [v for v in vs if not v.is_rest]
-            ineq_constraints.append(([1] + [-1] * len(vs), [tie] + vs, 0))
-            ineq_constraints.append(([1, 1], [tie, rest], 1))
-        return (ineq_constraints, eq_constraints)
+            grouped[(var.start, var.end)].append(var)
+        return grouped
 
     def get_variables(self) -> set[VariableIndex]:
         # Index: (bar, index, octave, rhythm (note duration), offset)
@@ -231,6 +149,80 @@ class Bar(NoteSystem):
                     variables.add(VariableIndex.make_tie(self.bar_name, n_notes_in_bar, i))
         return variables
 
+    def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
+        """Return constraints of the form Ax <= b and Cx = d."""
+        # Only one note can be played at a time in a given voice
+        ineq_constraints: list[Constraint] = []
+        eq_constraints: list[Constraint] = []
+        vset = self.get_variables()
+        variables = list(vset)
+
+        # Enough notes must be active to make up the bar (including rests)
+        # sum_{p, r, off} r x_{p, r, off} = bar_length
+        active_note_length_vars = []
+        active_note_length_coeff = []
+        lcm_denominator = math.lcm(*[x.duration for x in variables])
+        for var in variables:
+            if var.is_tie:
+                continue
+            active_note_length_vars.append(var)
+            active_note_length_coeff.append(lcm_denominator // var.duration)
+        if active_note_length_vars:
+            eq_constraints.append((active_note_length_coeff, active_note_length_vars, lcm_denominator))
+
+        # Non-overlap constraints
+        # For each two groups of variables that overlap in time, we add a constraint
+        grouped_vars = self.group_by_start_end(variables)
+        for (s1, e1), vars1 in grouped_vars.items():
+            for (s2, e2), vars2 in grouped_vars.items():
+                if s1 > s2 or (s1 == s2 and e1 == e2):
+                    continue
+                if s2 < e1:
+                    total_vars = len(vars1) + len(vars2)
+                    ineq_constraints.append(([1] * total_vars, vars1 + vars2, 1))
+
+        # Tied note constraints - if note 1 is active and tied then the next note must be active
+        # sum_{r'} x_{p, r', off + r} >= z for all p, r, off
+        # Introduce an aux variable z: z >= x_{p, r, off} X x_{tie, r, off} >= x_{p, r, off} + x_{tie, r, off} - 1
+        # If both the note and tie is active, then the set of all subsequent notes must have at least one
+        # being active; otherwise the constraints are trivial. Rests cannot be tied
+        grouped_start_var: dict[Fraction, list[VariableIndex]] = defaultdict(list)
+        for (s, e), vs in grouped_vars.items():
+            grouped_start_var[s].extend(vs)
+
+        for var in variables:
+            if var.is_tie or var.is_rest:
+                continue
+            tie = var.get_tie()
+            if tie not in vset:
+                continue
+            constrained_vars = []
+
+            constrained_vars = [
+                v for v in grouped_start_var[var.end] if
+                v.index == var.index and
+                v.octave == var.octave
+            ]
+            if not constrained_vars:
+                continue
+            z = VariableIndex(f"{self.bar_name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
+            ineq_constraints.append(([1, 1, -1], [var, tie, z], 1))
+            ineq_constraints.append(([1] + [-1] * len(constrained_vars), [z] + constrained_vars, 0))
+
+        # The tie variable also cannot be active if no notes are active
+        # And specifically the tie and the rest cannot be active at the same time
+        for _, vs in grouped_vars.items():
+            if not vs:
+                continue
+            tie = vs[0].get_tie()
+            rest = vs[0].get_rest()
+            if tie not in vset or rest not in vset:
+                continue
+            vs = [v for v in vs if not v.is_rest]
+            ineq_constraints.append(([1] + [-1] * len(vs), [tie] + vs, 0))
+            ineq_constraints.append(([1, 1], [tie, rest], 1))
+        return (ineq_constraints, eq_constraints)
+
 
 class BarGrid(NoteSystem):
     """Represents a grid of bars with vertical alignment (voices) and horizontal alignment (bars)."""
@@ -241,7 +233,24 @@ class BarGrid(NoteSystem):
         self._voice_names = list(voice_names)
         if len(self._voice_names) < 1:
             raise ValueError("At least one voice name must be provided.")
-        self._bars: dict[str, list[Bar | None]] = {k: [None] * n_bars for k in self._voice_names}
+        self.grid: dict[str, list[Bar]] = {k: [
+            Bar(f"{self._name}_{k}_{i}") for i in range(self._n_bars)
+        ] for k in self._voice_names}
+
+    @property
+    def bars(self):
+        """Returns a list of all bars in the grid."""
+        return [bar for voice in self.grid.values() for bar in voice]
+
+    def get_system(self) -> System:
+        # Check if the structure is consistent
+        assert set(self.grid.keys()) == set(self._voice_names), \
+            f"Voice names {set(self.grid.keys())} do not match provided voice names {set(self._voice_names)}."
+
+        for voice in self._voice_names:
+            if len(self.grid[voice]) != self._n_bars:
+                raise ValueError(f"Voice {voice} has {len(self.grid[voice])} bars, expected {self._n_bars}.")
+        return super().get_system()
 
     @property
     def name(self) -> str:
@@ -258,24 +267,43 @@ class BarGrid(NoteSystem):
         """Returns the list of voice names in the grid."""
         return copy.deepcopy(self._voice_names)
 
-    def add_bar(self, voice_name: str, bar_number: int, bar: Bar):
-        """Adds a bar to the grid."""
-        if not isinstance(bar, Bar):
-            raise TypeError("bar must be an instance of Bar.")
-        if voice_name not in self._bars:
-            raise ValueError(f"Voice {voice_name} does not exist in the grid.")
-        if bar_number < 0 or bar_number >= self._n_bars:
-            raise ValueError(f"Bar number {bar_number} is out of range. Must be between 0 and {self._n_bars - 1}.")
-        if self._bars[voice_name][bar_number] is not None:
-            raise ValueError(f"Bar {bar_number} in voice {voice_name} already exists.")
-        self._bars[voice_name][bar_number] = bar
-        bar.bar_name = f"{voice_name}_{bar_number}"
-
-    def get_variables(self) -> set[VariableIndex]:
-        raise NotImplementedError
-
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
-        raise NotImplementedError
+        ineq: list[Constraint] = []
+        eq: list[Constraint] = []
+        for voice in self._voice_names:
+            # Get all subconstraints from each bar
+            for var in self.grid[voice]:
+                bar_ineq, bar_eq = var.get_constraints()
+                ineq.extend(bar_ineq)
+                eq.extend(bar_eq)
+            variables = [self.grid[voice][i].get_variables() for i in range(self._n_bars)]
+            # Tie constraints in between bars
+            for i in range(self._n_bars - 1):
+                bar1_end = set([
+                    v for v in variables[i] if
+                    math.isclose(v.end, 1) and
+                    not v.is_rest and
+                    not v.is_tie
+                ])
+                bar2_start = set([
+                    v for v in variables[i + 1] if
+                    math.isclose(v.start, 0) and
+                    not v.is_rest and
+                    not v.is_tie
+                ])
+                for var in bar1_end:
+                    tie = var.get_tie()
+                    constrained_vars = [
+                        v for v in bar2_start if
+                        v.index == var.index and
+                        v.octave == var.octave
+                    ]
+                    if not constrained_vars:
+                        continue
+                    z = VariableIndex(f"{var.name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
+                    ineq.append(([1, 1, -1], [var, tie, z], 1))
+                    ineq.append(([1] + [-1] * len(constrained_vars), [z] + constrained_vars, 0))
+        return ineq, eq
 
 
 def get_scale(key: KeyName, mode: ModeName) -> list[int]:
