@@ -53,7 +53,7 @@ class NoteSystem(ABC):
         # Add back the aux variables that might have came up in the constraints
         all_vars = set([x for _, var, _ in ineq for x in var])
         all_vars.update([x for _, var, _ in eq for x in var])
-        return sorted(all_vars), ineq, eq
+        return System(list(all_vars), ineq, eq)
 
 
 class Bar(NoteSystem):
@@ -284,15 +284,15 @@ class BarGrid(NoteSystem):
         self._name = name
         self._n_bars = n_bars
         # Sort voices by lowest to highest (looking at their average range)
-        self._voice_names = tuple(sorted(voice_names, key=lambda x: x[1].start + x[1].stop))
+        self._voices = tuple(sorted(voice_names, key=lambda x: x[1].start + x[1].stop))
         self._voice_indices = {
-            voice[0]: i for i, voice in enumerate(self._voice_names)
+            voice[0]: i for i, voice in enumerate(self._voices)
         }
-        if len(self._voice_names) < 1:
+        if len(self._voices) < 1:
             raise ValueError("At least one voice name must be provided.")
         self.grid: dict[str, list[Bar]] = {k: [
             Bar(i, self._voice_indices[k], name) for i in range(self._n_bars)
-        ] for (k, r) in self._voice_names}
+        ] for (k, r) in self._voices}
 
     @property
     def bars(self):
@@ -301,10 +301,10 @@ class BarGrid(NoteSystem):
 
     def get_system(self) -> System:
         # Check if the structure is consistent
-        assert set(self.grid.keys()) == set(self._voice_names), \
-            f"Voice names {set(self.grid.keys())} do not match provided voice names {set(self._voice_names)}."
+        assert set(self.grid.keys()) == set([s for s, _ in self._voices]), \
+            f"Voice names {set(self.grid.keys())} do not match provided voice names {set(self._voices)}."
 
-        for (voice, _) in self._voice_names:
+        for (voice, _) in self._voices:
             if len(self.grid[voice]) != self._n_bars:
                 raise ValueError(f"Voice {voice} has {len(self.grid[voice])} bars, expected {self._n_bars}.")
         return super().get_system()
@@ -322,12 +322,12 @@ class BarGrid(NoteSystem):
     @property
     def voice_names(self) -> list[str]:
         """Returns the list of voice names in the grid."""
-        return [voice[0] for voice in self._voice_names]
+        return [voice[0] for voice in self._voices]
 
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
         ineq: list[Constraint] = []
         eq: list[Constraint] = []
-        for voice, _ in self._voice_names:
+        for voice, _ in self._voices:
             # Get all subconstraints from each bar
             for var in self.grid[voice]:
                 bar_ineq, bar_eq = var.get_constraints()
@@ -373,7 +373,7 @@ def get_scale(key: KeyName, mode: ModeName) -> list[int]:
     """Returns a scale in the form of a list of pitch classes."""
     key_idx = Note.from_str(f"{key}4").index
     if not (-6 <= key_idx <= 6):
-        # TODO This check is arbitrary - can remove in the future
+        # TODO this check is arbitrary - can remove in the future
         raise ValueError(f"Key {key} {mode} is out of range. Must be between 6 sharps and 6 flats.")
     if mode == 'Major':
         mode_lof = [0, 2, 4, -1, 1, 3, 5]  # Number of sharps in major key notes
@@ -382,7 +382,7 @@ def get_scale(key: KeyName, mode: ModeName) -> list[int]:
     return [key_idx + offset for offset in mode_lof]
 
 
-def get_grid_score(b: BarGrid, solution: Solution | None = None):
+def get_grid_score(b: BarGrid, sln: Solution | None = None):
     # Weird type rule to apease the type checker even if the system is not solvable
     # so we can defer the error here
     from music21 import stream, note, clef, key, tie
@@ -396,22 +396,29 @@ def get_grid_score(b: BarGrid, solution: Solution | None = None):
                 return element
         return None
 
-    assert solution is not None
+    assert sln is not None
     s = stream.Score()
 
-    for voice in b.grid:
+    solution = [v for v in sln[1] if not v.aux]
+
+    # Reverse to make the voices go from top to bottom
+    for voice, vr in reversed(b._voices):
         part = stream.Part()
         part.partName = voice
-        partname = f"{b.name}_{voice}"
-        midinumber = [n.midi_number for n in solution if n.name.startswith(partname) and n.is_note]
-        c = clef.TrebleClef() if min(midinumber) >= 50 else clef.BassClef() if max(midinumber) <= 69 else clef.TrebleClef()
+        average_voice = (vr.start + vr.stop) * .5
+        c = clef.TrebleClef() if average_voice >= 60 else clef.BassClef()
         part.append(c)
         part.append(meter.TimeSignature("4/4"))
         part.append(key.KeySignature(0))  # TODO add key signature from the solution
         for i in range(b.n_bars):
-            name = f"{b.name}_{voice}_{i}"
             measure = stream.Measure(number=i + 1)
-            notes_bar = sorted([n for n in solution if n.name == name and not n.aux])
+            notes_bar = sorted([
+                n for n in solution if
+                not n.aux and
+                n.voice == b._voice_indices[voice] and
+                n.bar_number == i and
+                n.piece == b.name
+            ])
             for n in notes_bar:
                 duration = Fraction(4, n.duration)
                 if n.is_note:

@@ -42,7 +42,7 @@ class VariableIndex:
     @property
     def name(self) -> str:
         """Get the name of this variable."""
-        return f"{self.piece} bar {self.bar_number} {self.voice}"
+        return f"{self.piece} bar {self.bar_number} voice {self.voice}"
 
     @property
     def is_tie(self) -> bool:
@@ -121,7 +121,7 @@ class VariableIndex:
         elif -1 <= self.octave <= 9:
             n = Note(self.index, self.octave, Fraction(1), Fraction(1), 1)
             var_type = f"{n.pitch_name}{n.octave}"
-        return f"VariableIndex(bar {self.name}, {self.offset}-th {duration_to_str(Fraction(4, self.duration))} note, {var_type})"
+        return f"VariableIndex({self.name}, {self.offset}-th {duration_to_str(Fraction(4, self.duration))} note, {var_type})"
 
     def __lt__(self, other: VariableIndex) -> bool:
         sp = (self.start, self.end, self.midi_number, self.index, self.name)
@@ -130,5 +130,18 @@ class VariableIndex:
 
 
 Constraint = tuple[list[int], list[VariableIndex], int]  # Represents the constraints of type either Ax <= b or Cx = d
-System = tuple[list[VariableIndex], list[Constraint], list[Constraint]]  # Represents the variables, system of equations and inequalities to solve
-Solution = list[VariableIndex]  # Represent the list of variables that ought to be 1. Does not include aux variables
+Solution = tuple[list[VariableIndex], list[VariableIndex]]  # Represent the list of variables that ought to be 0 and variables that ought to be 1
+
+
+class System(tuple[list[VariableIndex], list[Constraint], list[Constraint]]):
+    """A system of constraints for the LOF problem."""
+
+    def __new__(cls, vs: list[VariableIndex], ineq: list[Constraint], eq: list[Constraint]):
+        varset = set()
+        for a, x, b in ineq:
+            varset.update(x)
+        for a, x, b in eq:
+            varset.update(x)
+        if not varset.issubset(set(vs)):
+            raise ValueError("The system contains variables that are not in the variable list.")
+        return super().__new__(cls, (vs, ineq, eq))
