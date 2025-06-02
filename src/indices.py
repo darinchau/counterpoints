@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from dataclasses import dataclass, field
 from fractions import Fraction
 from functools import total_ordering, cached_property
@@ -9,8 +10,17 @@ from .consts import _LIMIT_DENOMINATOR
 @dataclass(frozen=True, unsafe_hash=True, eq=True)
 @total_ordering
 class VariableIndex:
-    name: str
-    # A unique name for which bar/voice/whatever it came from. Useful purely for indexing and bookkeeping
+    piece: str
+    # The name of the piece/grid/whatever that this variable belongs to.
+
+    bar_number: int
+    # The bar number of the bar which that this variable belongs to. For something that
+    # involves multiple bar (like interbar ties) this should be the bar with the highest bar number
+
+    voice: int
+    # The voice number of the voice which that this variable belongs to.
+    # Start from 0 for the lowest voice and work your way up
+    # If this doesn't apply, use -1
 
     duration: int
     # Duration as an integer in that how many of these notes are
@@ -30,6 +40,11 @@ class VariableIndex:
     aux: bool = False
 
     @property
+    def name(self) -> str:
+        """Get the name of this variable."""
+        return f"{self.piece} bar {self.bar_number} {self.voice}"
+
+    @property
     def is_tie(self) -> bool:
         """Check if this variable is a tie variable."""
         return self.octave == 10 and self.index == 1
@@ -44,27 +59,33 @@ class VariableIndex:
         """Check if this variable is a note variable."""
         return -1 <= self.octave <= 9 and not self.aux
 
-    @classmethod
-    def make_tie(cls, name: str, duration: int, offset: int) -> VariableIndex:
-        """Create a tie variable."""
-        return cls(name, duration, offset, 1, 10)
-
-    @classmethod
-    def make_rest(cls, name: str, duration: int, offset: int) -> VariableIndex:
-        """Create a rest variable."""
-        return cls(name, duration, offset, 0, 10)
-
     def get_tie(self) -> VariableIndex:
         """Get the tie variable for this note."""
         if self.is_tie:
             return self
-        return VariableIndex.make_tie(self.name, self.duration, self.offset)
+        return VariableIndex(self.name, self.bar_number, self.voice, self.duration, self.offset, index=1, octave=10)
 
     def get_rest(self) -> VariableIndex:
         """Get the rest variable for this note."""
         if self.is_rest:
             return self
-        return VariableIndex.make_rest(self.name, self.duration, self.offset)
+        return VariableIndex(self.name, self.bar_number, self.voice, self.duration, self.offset, index=0, octave=10)
+
+    def get_aux(self) -> VariableIndex:
+        """Get an auxiliary variable for this note."""
+        # Get a unique id for the auxiliary variable
+        # could use a singleton counter but eh what the heck
+        tid = time.time_ns()
+        return VariableIndex(
+            self.name + str(tid),
+            self.bar_number,
+            self.voice,
+            self.duration,
+            self.offset,
+            index=self.index,
+            octave=self.octave,
+            aux=True
+        )
 
     def get_note(self) -> Note:
         return Note(

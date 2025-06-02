@@ -26,7 +26,8 @@ from itertools import product
 from collections import defaultdict
 from .consts import (
     PIANO_A0, PIANO_C8, _LIMIT_DENOMINATOR,
-    VoiceRange, KeyName, ModeName
+    VoiceRange, KeyName, ModeName,
+    SOPRANO, ALTO, TENOR, BASS
 )
 from .indices import VariableIndex, Constraint, System, Solution
 
@@ -58,8 +59,10 @@ class NoteSystem(ABC):
 class Bar(NoteSystem):
     """Represents a bar that encodes variables with all the possible notes and constraints"""
 
-    def __init__(self, bar_name: str = ""):
-        self._bar_name = bar_name
+    def __init__(self, bar_number: int, voice: int = -1, bar_name: str = ""):
+        self._piece_name = bar_name
+        self._bar_number = bar_number
+        self._voice = voice
         self._voice_constraints: list[VoiceRange] = [
             VoiceRange(PIANO_A0, PIANO_C8)  # trim it to standard piano
         ]
@@ -70,7 +73,17 @@ class Bar(NoteSystem):
     @property
     def bar_name(self) -> str:
         """Returns the name of the bar."""
-        return self._bar_name
+        return self._piece_name
+
+    @property
+    def bar_number(self) -> int:
+        """Returns the number of the bar."""
+        return self._bar_number
+
+    @property
+    def voice(self) -> int:
+        """Returns the voice number of the bar."""
+        return self._voice
 
     def add_voice_constraint(self, voice_range: VoiceRange):
         """Add a voice constraint to the bar."""
@@ -152,24 +165,30 @@ class Bar(NoteSystem):
                     continue
                 for voice in self._voice_constraints:
                     permitted_pitches &= set(voice)
+                vx = None
                 for index, octave in product(permitted_indices, range(-1, 9)):
                     note_midi_number = midi_number_from_index_octave(index, octave)
                     if note_midi_number not in permitted_pitches:
                         continue
                     # N + 2 variables per note: note activation, tie, rest
                     # Using i and n_notes_in_bar as a proxy for the offset and duration
-                    variables.add(VariableIndex(
-                        name=self._bar_name,
+                    vx = VariableIndex(
+                        self._piece_name,
+                        self._bar_number,
+                        self._voice,
                         duration=n_notes_in_bar,
                         offset=i,
                         index=index,
                         octave=octave
-                    ))
-                variables.add(VariableIndex.make_rest(self._bar_name, n_notes_in_bar, i))
+                    )
+                    variables.add(vx)
+                if vx is None:
+                    continue
+                variables.add(vx.get_rest())
                 if i < n_notes_in_bar - 1:
                     # Only add tie if it's not the last note in the bar
                     # TODO add cross-bar tie constraints somewhere else
-                    variables.add(VariableIndex.make_tie(self._bar_name, n_notes_in_bar, i))
+                    variables.add(vx.get_tie())
         self._variables = variables
         return variables
 
@@ -229,7 +248,7 @@ class Bar(NoteSystem):
             ]
             if not constrained_vars:
                 continue
-            z = VariableIndex(f"{self._bar_name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
+            z = var.get_aux()
             ineq_constraints.append(([1, 1, -1], [var, tie, z], 1))
             ineq_constraints.append(([1] + [-1] * len(constrained_vars), [z] + constrained_vars, 0))
 
@@ -251,15 +270,29 @@ class Bar(NoteSystem):
 class BarGrid(NoteSystem):
     """Represents a grid of bars with vertical alignment (voices) and horizontal alignment (bars)."""
 
-    def __init__(self, name: str, n_bars: int = 64, voice_names: typing.Iterable[str] = ("Soprano", "Alto", "Tenor", "Bass")):
+    def __init__(
+            self,
+            name: str,
+            n_bars: int = 64,
+            voice_names: typing.Iterable[tuple[str, VoiceRange]] = (
+                ("Soprano", SOPRANO),
+                ("Alto", ALTO),
+                ("Tenor", TENOR),
+                ("Bass", BASS),
+            )
+    ):
         self._name = name
         self._n_bars = n_bars
-        self._voice_names = list(voice_names)
+        # Sort voices by lowest to highest (looking at their average range)
+        self._voice_names = tuple(sorted(voice_names, key=lambda x: x[1].start + x[1].stop))
+        self._voice_indices = {
+            voice[0]: i for i, voice in enumerate(self._voice_names)
+        }
         if len(self._voice_names) < 1:
             raise ValueError("At least one voice name must be provided.")
         self.grid: dict[str, list[Bar]] = {k: [
-            Bar(f"{self._name}_{k}_{i}") for i in range(self._n_bars)
-        ] for k in self._voice_names}
+            Bar(i, self._voice_indices[k], name) for i in range(self._n_bars)
+        ] for (k, r) in self._voice_names}
 
     @property
     def bars(self):
@@ -271,7 +304,7 @@ class BarGrid(NoteSystem):
         assert set(self.grid.keys()) == set(self._voice_names), \
             f"Voice names {set(self.grid.keys())} do not match provided voice names {set(self._voice_names)}."
 
-        for voice in self._voice_names:
+        for (voice, _) in self._voice_names:
             if len(self.grid[voice]) != self._n_bars:
                 raise ValueError(f"Voice {voice} has {len(self.grid[voice])} bars, expected {self._n_bars}.")
         return super().get_system()
@@ -289,12 +322,12 @@ class BarGrid(NoteSystem):
     @property
     def voice_names(self) -> list[str]:
         """Returns the list of voice names in the grid."""
-        return copy.deepcopy(self._voice_names)
+        return [voice[0] for voice in self._voice_names]
 
     def get_constraints(self) -> tuple[list[Constraint], list[Constraint]]:
         ineq: list[Constraint] = []
         eq: list[Constraint] = []
-        for voice in self._voice_names:
+        for voice, _ in self._voice_names:
             # Get all subconstraints from each bar
             for var in self.grid[voice]:
                 bar_ineq, bar_eq = var.get_constraints()
@@ -320,6 +353,9 @@ class BarGrid(NoteSystem):
                 ])
                 for var in bar1_end:
                     tie = var.get_tie()
+                    # Set the tie variable to increment its bar number
+                    # since this tie ties to the next bar
+                    object.__setattr__(tie, 'bar_number', i + 1)
                     constrained_vars = [
                         v for v in bar2_start if
                         v.index == var.index and
@@ -327,7 +363,7 @@ class BarGrid(NoteSystem):
                     ]
                     if not constrained_vars:
                         continue
-                    z = VariableIndex(f"{var.name}aux1", var.duration, var.offset, var.index, var.octave, aux=True)
+                    z = var.get_aux()
                     ineq.append(([1, 1, -1], [var, tie, z], 1))
                     ineq.append(([1] + [-1] * len(constrained_vars), [z] + constrained_vars, 0))
         return ineq, eq
@@ -337,7 +373,7 @@ def get_scale(key: KeyName, mode: ModeName) -> list[int]:
     """Returns a scale in the form of a list of pitch classes."""
     key_idx = Note.from_str(f"{key}4").index
     if not (-6 <= key_idx <= 6):
-        # This check is arbitrary - can remove in the future
+        # TODO This check is arbitrary - can remove in the future
         raise ValueError(f"Key {key} {mode} is out of range. Must be between 6 sharps and 6 flats.")
     if mode == 'Major':
         mode_lof = [0, 2, 4, -1, 1, 3, 5]  # Number of sharps in major key notes
@@ -346,7 +382,9 @@ def get_scale(key: KeyName, mode: ModeName) -> list[int]:
     return [key_idx + offset for offset in mode_lof]
 
 
-def get_grid_score(b: BarGrid, solution: Solution):
+def get_grid_score(b: BarGrid, solution: Solution | None = None):
+    # Weird type rule to apease the type checker even if the system is not solvable
+    # so we can defer the error here
     from music21 import stream, note, clef, key, tie
     from music21.meter import base as meter
     from fractions import Fraction
