@@ -9,5 +9,5 @@ from .consts import (
 )
 from .indices import System, Solution, Constraint, VariableIndex
 from .note import Note
-from .notesystem import Bar, BarGrid, NoteSystem
+from .notesystem import Bar, BarGrid, NoteSystem, get_grid_score
 from .solve import NoteSystemSolver

@@ -382,7 +382,7 @@ def get_scale(key: KeyName, mode: ModeName) -> list[int]:
     return [key_idx + offset for offset in mode_lof]
 
 
-def get_grid_score(b: BarGrid, sln: Solution | None = None):
+def get_grid_score(b: BarGrid, sln: Solution | None):
     # Weird type rule to apease the type checker even if the system is not solvable
     # so we can defer the error here
     from music21 import stream, note, clef, key, tie
